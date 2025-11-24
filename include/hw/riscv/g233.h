@@ -24,52 +24,48 @@
 #include "hw/boards.h"
 #include "hw/riscv/riscv_hart.h"
 #include "hw/gpio/sifive_gpio.h"
+#include "qemu/typedefs.h"
 
 #define TYPE_RISCV_G233_SOC "riscv.gevico.g233.soc"
-#define RISCV_G233_SOC(obj) \
-    OBJECT_CHECK(G233SoCState, (obj), TYPE_RISCV_G233_SOC)
+
+#define RISCV_G233_SOC(obj) OBJECT_CHECK(G233SoCState, (obj), TYPE_RISCV_G233_SOC)
 
 typedef struct G233SoCState {
-    /*< private >*/
-    DeviceState parent_obj;
+	/*< private >*/
+	DeviceState parent_obj;
 
-    /*< public >*/
-    RISCVHartArrayState cpus;
-    DeviceState *plic;
-    DeviceState *uart0;
-    DeviceState *pwm0;
-    SIFIVEGPIOState gpio;
-    MemoryRegion mask_rom;
+	/*< public >*/
+	RISCVHartArrayState cpus;
+	DeviceState *plic;
+	DeviceState *uart0;
+	DeviceState *pwm0;
+	SIFIVEGPIOState gpio;
+	MemoryRegion mask_rom;
 } G233SoCState;
 
 #define TYPE_RISCV_G233_MACHINE MACHINE_TYPE_NAME("g233")
-#define RISCV_G233_MACHINE(obj) \
-    OBJECT_CHECK(G233MachineState, (obj), TYPE_RISCV_G233_MACHINE)
+#define RISCV_G233_MACHINE(obj) OBJECT_CHECK(G233MachineState, (obj), TYPE_RISCV_G233_MACHINE)
 
 typedef struct G233MachineState {
-    /*< private >*/
-    MachineState parent_obj;
+	/*< private >*/
+	MachineState parent_obj;
 
-    /*< public >*/
-    G233SoCState soc;
+	/*< public >*/
+	G233SoCState soc;
 
 } G233MachineState;
 
 enum {
-    G233_DEV_MROM,
-    G233_DEV_CLINT,
-    G233_DEV_PLIC,
-    G233_DEV_GPIO0,
-    G233_DEV_UART0, /* PL011 */
-    G233_DEV_PWM0,
-    G233_DEV_DRAM
+	G233_DEV_MROM,
+	G233_DEV_CLINT,
+	G233_DEV_PLIC,
+	G233_DEV_GPIO0,
+	G233_DEV_UART0, /* PL011 */
+	G233_DEV_PWM0,
+	G233_DEV_DRAM
 };
 
-enum {
-    G233_UART0_IRQ  = 1,
-    G233_PWM0_IRQ   = 2,
-    G233_GPIO0_IRQ0 = 8
-};
+enum { G233_UART0_IRQ = 1, G233_PWM0_IRQ = 2, G233_GPIO0_IRQ0 = 8 };
 
 #define G233_PLIC_HART_CONFIG "M"
 /*
