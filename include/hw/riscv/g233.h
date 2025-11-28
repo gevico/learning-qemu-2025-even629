@@ -21,10 +21,10 @@
 #ifndef HW_G233_H
 #define HW_G233_H
 
+#include "qemu/typedefs.h"
 #include "hw/boards.h"
 #include "hw/riscv/riscv_hart.h"
 #include "hw/gpio/sifive_gpio.h"
-#include "qemu/typedefs.h"
 
 #define TYPE_RISCV_G233_SOC "riscv.gevico.g233.soc"
 

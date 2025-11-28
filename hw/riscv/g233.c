@@ -22,21 +22,23 @@
 #include "qemu/cutils.h"
 #include "qemu/error-report.h"
 #include "qapi/error.h"
+#include "qemu/typedefs.h"
+#include "system/block-backend-global-state.h"
 #include "system/system.h"
 #include "system/memory.h"
 #include "target/riscv/cpu.h"
 #include "chardev/char.h"
 #include "hw/loader.h"
 #include "hw/sysbus.h"
-#include "hw/riscv/g233.h"
 #include "hw/riscv/boot.h"
 #include "hw/intc/riscv_aclint.h"
 #include "hw/intc/sifive_plic.h"
 #include "hw/misc/unimp.h"
 #include "hw/char/pl011.h"
 #include "hw/riscv/riscv_hart.h"
-
-/* TODO: you need include some header files */
+#include "hw/qdev-properties.h"
+#include "hw/riscv/g233.h"
+#include "hw/ssi/g233_spi.h"
 
 static const MemMapEntry g233_memmap[] = {
 	[G233_DEV_MROM] = { 0x1000, 0x2000 },	      [G233_DEV_CLINT] = { 0x2000000, 0x10000 },
@@ -126,6 +128,8 @@ static void g233_machine_init(MachineState *machine)
 	G233MachineState *s = RISCV_G233_MACHINE(machine);
 	int i;
 	RISCVBootInfo boot_info;
+	DeviceState *flash_dev;
+	BlockBackend *blk;
 
 	if (machine->ram_size < mc->default_ram_size) { // mc->default_ram_size = g233_memmap[G233_DEV_DRAM].size;
 		char *sz = size_to_str(mc->default_ram_size);
@@ -160,6 +164,18 @@ static void g233_machine_init(MachineState *machine)
 	if (machine->kernel_filename) {
 		riscv_load_kernel(machine, &boot_info, memmap[G233_DEV_DRAM].base, false, NULL);
 	}
+	flash_dev = qdev_new("w25x16");
+	/* Get block driver from command line */
+	BlockDriverState *bs = bdrv_lookup_bs(NULL, "flash0", &error_fatal);
+	if (bs) {
+		blk = blk_new(qemu_get_aio_context(), 0, BLK_PERM_ALL);
+		blk_insert_bs(blk, bs, &error_fatal);
+	}
+	qdev_prop_set_drive_err(flash_dev, "driver", blk, &error_fatal);
+	qdev_prop_set_uint32(flash_dev, "cs", 0);
+	// qdev_realize_and_unref(flash_dev, BUS(&soc.spi0.ssi), &error_fatal);
+	//cs_line = qdev_get_gpio_in_named(flash_dev, SSI_GPIO_CS, 0);
+	//sysbus_connect_irq(SYS_BUS_DEVICE(&soc.spi0), 0, cs_line);
 }
 
 static void g233_machine_instance_init(Object *obj)
