@@ -21,10 +21,10 @@
 #ifndef HW_G233_H
 #define HW_G233_H
 
-#include "qemu/typedefs.h"
 #include "hw/boards.h"
 #include "hw/riscv/riscv_hart.h"
 #include "hw/gpio/sifive_gpio.h"
+#include "hw/ssi/g233_spi.h"
 
 #define TYPE_RISCV_G233_SOC "riscv.gevico.g233.soc"
 
@@ -40,6 +40,7 @@ typedef struct G233SoCState {
 	DeviceState *uart0;
 	DeviceState *pwm0;
 	SIFIVEGPIOState gpio;
+	G233SPIState spi0;
 	MemoryRegion mask_rom;
 } G233SoCState;
 
@@ -62,10 +63,11 @@ enum {
 	G233_DEV_GPIO0,
 	G233_DEV_UART0, /* PL011 */
 	G233_DEV_PWM0,
-	G233_DEV_DRAM
+	G233_DEV_DRAM,
+	G233_DEV_SPI0,
 };
 
-enum { G233_UART0_IRQ = 1, G233_PWM0_IRQ = 2, G233_GPIO0_IRQ0 = 8 };
+enum { G233_UART0_IRQ = 1, G233_PWM0_IRQ = 2, G233_SPI0_IRQ = 3, G233_GPIO0_IRQ0 = 8 };
 
 #define G233_PLIC_HART_CONFIG "M"
 /*

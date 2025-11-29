@@ -37,14 +37,17 @@
 #include "hw/char/pl011.h"
 #include "hw/riscv/riscv_hart.h"
 #include "hw/qdev-properties.h"
+#include "hw/timer/sifive_pwm.h"
 #include "hw/riscv/g233.h"
+#include "hw/ssi/ssi.h"
 #include "hw/ssi/g233_spi.h"
+#include "hw/qdev-core.h"
 
 static const MemMapEntry g233_memmap[] = {
 	[G233_DEV_MROM] = { 0x1000, 0x2000 },	      [G233_DEV_CLINT] = { 0x2000000, 0x10000 },
 	[G233_DEV_PLIC] = { 0xc000000, 0x4000000 },   [G233_DEV_UART0] = { 0x10000000, 0x1000 },
 	[G233_DEV_GPIO0] = { 0x10012000, 0x1000 },    [G233_DEV_PWM0] = { 0x10015000, 0x1000 },
-	[G233_DEV_DRAM] = { 0x80000000, 0x40000000 },
+	[G233_DEV_DRAM] = { 0x80000000, 0x40000000 }, [G233_DEV_SPI0] = { 0x10018000, 0x1000 },
 };
 
 static void g233_soc_instance_init(Object *obj)
@@ -60,7 +63,9 @@ static void g233_soc_instance_init(Object *obj)
 	object_property_set_int(OBJECT(&s->cpus), "resetvec", g233_memmap[G233_DEV_MROM].base + 4, &error_fatal);
 
 	// GPIO
-	object_initialize_child(obj, "sifive.gpio", &s->gpio, TYPE_SIFIVE_GPIO);
+	object_initialize_child(obj, "riscv.g233.sifive.gpio0", &s->gpio, TYPE_SIFIVE_GPIO);
+	// SPI
+	object_initialize_child(obj, "riscv.g233.sifive.spi0", &s->spi0, TYPE_G233_SPI);
 }
 
 static void g233_soc_realize(DeviceState *dev, Error **errp)
@@ -93,13 +98,10 @@ static void g233_soc_realize(DeviceState *dev, Error **errp)
 	if (!sysbus_realize(SYS_BUS_DEVICE(&s->gpio), errp)) {
 		return;
 	}
-
 	/* Map GPIO registers */
 	sysbus_mmio_map(SYS_BUS_DEVICE(&s->gpio), 0, memmap[G233_DEV_GPIO0].base);
-
 	/* Pass all GPIOs to the SOC layer so they are available to the board */
 	qdev_pass_gpios(DEVICE(&s->gpio), dev, NULL);
-
 	/* Connect GPIO interrupts to the PLIC */
 	for (int i = 0; i < 32; i++) {
 		sysbus_connect_irq(SYS_BUS_DEVICE(&s->gpio), i, qdev_get_gpio_in(DEVICE(s->plic), G233_GPIO0_IRQ0 + i));
@@ -110,7 +112,21 @@ static void g233_soc_realize(DeviceState *dev, Error **errp)
 				serial_hd(0));
 
 	/* SiFive.PWM0 */
-	create_unimplemented_device("riscv.g233.pwm0", memmap[G233_DEV_PWM0].base + 4, memmap[G233_DEV_PWM0].size);
+	// create_unimplemented_device("riscv.g233.pwm0", memmap[G233_DEV_PWM0].base + 4, memmap[G233_DEV_PWM0].size);
+	s->pwm0 = qdev_new(TYPE_SIFIVE_PWM);
+	if (!sysbus_realize(SYS_BUS_DEVICE(s->pwm0), errp)) {
+		return;
+	}
+	sysbus_mmio_map(SYS_BUS_DEVICE(s->pwm0), 0, memmap[G233_DEV_PWM0].base);
+	sysbus_connect_irq(SYS_BUS_DEVICE(s->pwm0), 0, qdev_get_gpio_in(DEVICE(s->plic), G233_PWM0_IRQ));
+
+	/* G233.SPI0 */
+	if (!sysbus_realize(SYS_BUS_DEVICE(&s->spi0), errp)) {
+		return;
+	}
+	sysbus_mmio_map(SYS_BUS_DEVICE(&s->spi0), 0, memmap[G233_DEV_SPI0].base);
+	// 把 SPI0 设备的第 0 号中断输出线，连接到 PLIC 的第 G233_SPI0_IRQ 号中断输入线上。
+	sysbus_connect_irq(SYS_BUS_DEVICE(&s->spi0), 0, qdev_get_gpio_in(DEVICE(s->plic), G233_SPI0_IRQ));
 }
 
 static void g233_soc_class_init(ObjectClass *oc, const void *data)
@@ -128,8 +144,6 @@ static void g233_machine_init(MachineState *machine)
 	G233MachineState *s = RISCV_G233_MACHINE(machine);
 	int i;
 	RISCVBootInfo boot_info;
-	DeviceState *flash_dev;
-	BlockBackend *blk;
 
 	if (machine->ram_size < mc->default_ram_size) { // mc->default_ram_size = g233_memmap[G233_DEV_DRAM].size;
 		char *sz = size_to_str(mc->default_ram_size);
@@ -164,20 +178,18 @@ static void g233_machine_init(MachineState *machine)
 	if (machine->kernel_filename) {
 		riscv_load_kernel(machine, &boot_info, memmap[G233_DEV_DRAM].base, false, NULL);
 	}
-	flash_dev = qdev_new("w25x16");
-	/* Get block driver from command line */
-	BlockDriverState *bs = bdrv_lookup_bs(NULL, "flash0", &error_fatal);
-	if (bs) {
-		blk = blk_new(qemu_get_aio_context(), 0, BLK_PERM_ALL);
-		blk_insert_bs(blk, bs, &error_fatal);
+	//创建一颗 SPI Flash（16Mbit）。
+	DeviceState *flash_dev = qdev_new("w25x16");
+	DriveInfo *dinfo = drive_get(IF_MTD, 0, 0);
+	if (dinfo) {
+		qdev_prop_set_drive_err(flash_dev, "drive", blk_by_legacy_dinfo(dinfo), &error_fatal);
 	}
-	qdev_prop_set_drive_err(flash_dev, "driver", blk, &error_fatal);
-	qdev_prop_set_uint32(flash_dev, "cs", 0);
-	// qdev_realize_and_unref(flash_dev, BUS(&soc.spi0.ssi), &error_fatal);
-	//cs_line = qdev_get_gpio_in_named(flash_dev, SSI_GPIO_CS, 0);
-	//sysbus_connect_irq(SYS_BUS_DEVICE(&soc.spi0), 0, cs_line);
-}
 
+	qdev_realize_and_unref(flash_dev, BUS(s->soc.spi0.ssi), &error_fatal);
+
+	qemu_irq flash_cs = qdev_get_gpio_in_named(flash_dev, SSI_GPIO_CS, 0);
+	sysbus_connect_irq(SYS_BUS_DEVICE(&s->soc.spi0), 1, flash_cs);
+}
 static void g233_machine_instance_init(Object *obj)
 {
 	// G233MachineState *s = RISCV_G233_MACHINE(obj);

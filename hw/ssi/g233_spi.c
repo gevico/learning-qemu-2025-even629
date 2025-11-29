@@ -10,63 +10,70 @@
 #include <stdint.h>
 #include "hw/ssi/g233_spi.h"
 
-
 static void g233_spi_update_irq(G233SPIState *s)
 {
-	uint32_t sr = s->regs[G233_SPI_SR_IDX];
-	uint32_t cr2 = s->regs[G233_SPI_CR2_IDX];
 	int level = 0;
-	// 发送缓冲区空 && TXE 中断使能了
-	if ((sr & G233_SR_TXE_MASK) && (cr2 & G233_CR2_TXEIE_MASK)) {
-		level = 1;
-	}
-	// 接收缓冲区非空 && RXNE 中断使能了
-	if ((sr & G233_SR_RXNE_MASK) && (cr2 & G233_CR2_RXNEIE_MASK)) {
-		level = 1;
-	}
-	// 使能了错误中断情况下发生了溢出错误或者下溢错误
-	if ((sr & (G233_SR_OVERRUN_MASK | G233_SR_UNDERRUN_MASK)) && (cr2 & G233_CR2_ERRIE_MASK)) {
-		level = 1;
+	if (fifo8_is_empty(&s->tx_fifo)) {
+		s->regs[G233_SPI_SR_IDX] |= G233_SPI_SR_TXE_MASK;
+		if (s->regs[G233_SPI_CR2_IDX] & G233_SPI_CR2_TXEIE_MASK) {
+			level = 1;
+		}
+	} else { //FIFO size: 1
+		s->regs[G233_SPI_SR_IDX] &= ~G233_SPI_SR_TXE_MASK;
 	}
 
+	if (!fifo8_is_empty(&s->rx_fifo)) {
+		s->regs[G233_SPI_SR_IDX] |= G233_SPI_SR_RXNE_MASK;
+		if (s->regs[G233_SPI_CR2_IDX] & G233_SPI_CR2_RXNEIE_MASK) {
+			level = 1;
+		}
+	} else {
+		s->regs[G233_SPI_SR_IDX] &= ~G233_SPI_SR_RXNE_MASK;
+	}
+
+	// 使能了错误中断情况下发生了溢出错误或者下溢错误
+	if ((s->regs[G233_SPI_CR2_IDX] & G233_SPI_CR2_ERRIE_MASK) &&
+	    (s->regs[G233_SPI_SR_IDX] & (G233_SPI_SR_OVERRUN_MASK | G233_SPI_SR_UNDERRUN_MASK))) {
+		level = 1;
+	}
 	qemu_set_irq(s->irq, level);
 }
 
 static void g233_spi_update_cs(G233SPIState *s)
 {
-	int i, level;
+	int i;
 	bool enable, active;
 	for (i = 0; i < s->num_cs; i++) {
 		enable = s->regs[G233_SPI_CSCTRL_IDX] & (1 << i);
 		active = s->regs[G233_SPI_CSCTRL_IDX] & (1 << (4 + i));
-
-		level = (enable && active) ? 0 : 1;
-		qemu_set_irq(s->cs_lines[i], level);
+		if (enable) {
+			qemu_set_irq(s->cs_lines[i], !active);
+		} else {
+			qemu_irq_raise(s->cs_lines[i]);
+		}
 	}
 }
 
 static void g233_spi_flush_tx(G233SPIState *s)
 {
 	uint8_t tx_data, rx_data;
+	s->regs[G233_SPI_SR_IDX] |= G233_SPI_SR_BSY_MASK;
+
 	while (!fifo8_is_empty(&s->tx_fifo)) {
 		tx_data = fifo8_pop(&s->tx_fifo);
 
 		/* 通过 SSIBus 发送给挂载的设备 */
-		rx_data = ssi_transfer(s->spi, tx_data);
+		rx_data = ssi_transfer(s->ssi, tx_data);
 
 		/* 写入 RX FIFO */
 		if (!fifo8_is_full(&s->rx_fifo)) {
 			fifo8_push(&s->rx_fifo, rx_data);
-			s->regs[G233_SPI_SR_IDX] |= G233_SR_RXNE_MASK;
 		} else {
-			s->regs[G233_SPI_SR_IDX] |= G233_SR_OVERRUN_MASK;
+			s->regs[G233_SPI_SR_IDX] |= G233_SPI_SR_OVERRUN_MASK;
 		}
 	}
 
-	/* TX FIFO 空了 → 设置 TXE */
-	s->regs[G233_SPI_SR_IDX] |= G233_SR_TXE_MASK;
-
-	g233_spi_update_irq(s);
+	s->regs[G233_SPI_SR_IDX] &= ~G233_SPI_SR_BSY_MASK;
 }
 
 /* ------------ Register Read ---------------- */
@@ -77,10 +84,9 @@ static uint64_t g233_spi_read(void *opaque, hwaddr addr, unsigned int size)
 
 	switch (addr) {
 	case G233_SPI_DR:
-		if (fifo8_is_empty(&s->rx_fifo)) {
-			s->regs[G233_SPI_SR_IDX] |= G233_SR_UNDERRUN_MASK;
+		if (fifo8_is_empty(&s->rx_fifo)) { //rx为空
+			s->regs[G233_SPI_SR_IDX] |= G233_SPI_SR_UNDERRUN_MASK;
 			r = 0;
-			g233_spi_update_irq(s);
 		} else {
 			r = fifo8_pop(&s->rx_fifo);
 		}
@@ -89,7 +95,7 @@ static uint64_t g233_spi_read(void *opaque, hwaddr addr, unsigned int size)
 	case G233_SPI_CR2:
 	case G233_SPI_SR:
 	case G233_SPI_CSCTRL:
-		r = s->regs[addr];
+		r = s->regs[addr >> 2];
 		break;
 	default:
 		r = 0;
@@ -97,6 +103,7 @@ static uint64_t g233_spi_read(void *opaque, hwaddr addr, unsigned int size)
 			      (unsigned long)addr);
 		break;
 	}
+	g233_spi_update_irq(s);
 	return r;
 }
 
@@ -104,23 +111,27 @@ static uint64_t g233_spi_read(void *opaque, hwaddr addr, unsigned int size)
 static void g233_spi_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
 {
 	G233SPIState *s = opaque;
-// TODO 保留位必须为0
+	// TODO 保留位必须为0
 	switch (addr) {
 	case G233_SPI_CR1:
+		s->regs[addr >> 2] = value & G233_SPI_CR1_MASK;
+		break;
 	case G233_SPI_CR2:
-	case G233_SPI_SR:
-		s->regs[addr >> 2] = value;
-		g233_spi_update_irq(s);
+		s->regs[addr >> 2] = value & G233_SPI_CR2_MASK;
+		break;
+	case G233_SPI_SR: //清除error标志位
+		s->regs[addr >> 2] &= ~(value & (G233_SPI_SR_UNDERRUN_MASK | G233_SPI_SR_OVERRUN_MASK));
 		break;
 	case G233_SPI_CSCTRL:
-		s->regs[addr >> 2] = value;
+		s->regs[addr >> 2] = value & G233_SPI_CSCTRL_MASK;
 		g233_spi_update_cs(s);
-		g233_spi_update_irq(s);
 		break;
 	case G233_SPI_DR:
 		if (!fifo8_is_full(&s->tx_fifo)) {
 			fifo8_push(&s->tx_fifo, (uint8_t)value);
 			g233_spi_flush_tx(s);
+		} else {
+			s->regs[G233_SPI_SR_IDX] |= G233_SPI_SR_OVERRUN_MASK;
 		}
 		break;
 	default:
@@ -128,6 +139,7 @@ static void g233_spi_write(void *opaque, hwaddr addr, uint64_t value, unsigned s
 			      (unsigned long)addr);
 		break;
 	}
+	g233_spi_update_irq(s);
 }
 
 static const MemoryRegionOps g233_spi_ops = {
@@ -142,7 +154,7 @@ static void g233_spi_realize(DeviceState *dev, Error **errp)
 	G233SPIState *s = G233_SPI(dev);
 	int i;
 
-	s->spi = ssi_create_bus(dev, "spi");
+	s->ssi = ssi_create_bus(dev, "spi");
 	sysbus_init_irq(sbd, &s->irq);
 
 	s->cs_lines = g_new0(qemu_irq, s->num_cs);
